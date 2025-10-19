@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -34,6 +36,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     public static bool P3 = false;
     private static bool scheduledCoralRain = false;
     private static int groundHits = 0;
+    private static GameObject coralSpikePool;
     enum CoralSpikeState {
         UPPERCUT = 2,
         JAB = 3,
@@ -97,37 +100,38 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             {
                 //TODO: IMPLEMENT ITEM POOLING CAUSE THIS LAGS LMAOOO :sob:
                 case CoralSpikeState.UPPERCUT:
-                    TriplicateSpike(go, 8, Vector3.right);
-                    TriplicateSpike(go, -8, Vector3.right);
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 8 : 10, Vector3.right, 0f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -8 : -10, Vector3.right, 0f));
                     if (P2)
                     {
-                        TriplicateSpike(go, 16, Vector3.right);
-                        TriplicateSpike(go, -16, Vector3.right);
-                        TriplicateSpike(go, 24, Vector3.right);
-                        TriplicateSpike(go, -24, Vector3.right);
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, 16, Vector3.right, 0.2f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, -16, Vector3.right, 0.2f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, 24, Vector3.right, 0.3f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, -24, Vector3.right, 0.3f));
                     }
-                    if (P3) TriplicateSpike(go, new [] {4, -4}.GetRandomElement(), Vector3.right);
+                    if (P3) GameManager.instance.StartCoroutine(SpawnSpike(go, new [] {4, -4}.GetRandomElement(), Vector3.right, 0.1f));
                     break;
                 case CoralSpikeState.JAB:
-                    TriplicateSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up);
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up, 0f));
                     break;
                 case CoralSpikeState.AIRJAB:
-                    TriplicateSpike(go, 12, Vector3.right);
-                    TriplicateSpike(go, -12, Vector3.right);
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 11 : 12, Vector3.right, 0f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -11 : -12, Vector3.right, 0f));
                     if (P2)
                     {
-                        TriplicateSpike(go, 24, Vector3.right);
-                        TriplicateSpike(go, -24, Vector3.right);
-                        TriplicateSpike(go, 36, Vector3.right);
-                        TriplicateSpike(go, -36, Vector3.right);
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, 22, Vector3.right, 0.2f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, -22, Vector3.right, 0.2f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, 33, Vector3.right, 0.3f));
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, -33, Vector3.right, 0.3f));
                     }
-                    if (P3) TriplicateSpike(go, new [] {6, -6}.GetRandomElement(), Vector3.right);
+                    if (P3) GameManager.instance.StartCoroutine(SpawnSpike(go, new [] {5, -5}.GetRandomElement(), Vector3.right, 0.1f));
                     break;
             }
         }
     }
-    private static void TriplicateSpike(GameObject go, int distance, Vector3 direction)
+    private static IEnumerator SpawnSpike(GameObject go, int distance, Vector3 direction, float delay)
     {
+        yield return new WaitForSeconds(delay);
         GameObject clone = Instantiate(go, go.transform.parent);
         clone.name = go.name + "_Clone";
         clone.transform.position = go.transform.position + direction * distance;
@@ -140,6 +144,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 clone.transform.position.z);
         }
         clone.SetActive(true);
+        GameManager.instance.StartCoroutine(DestroyClone(clone));
+    }
+    private static IEnumerator DestroyClone(GameObject clone)
+    {
+        yield return new WaitForSeconds(3f);
+        Destroy(clone);
     }
     [HarmonyPostfix]
     [HarmonyPatch(typeof(PlayMakerFSM), "OnEnable")]
@@ -158,6 +168,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 bossControlFSM = __instance.Fsm.FsmComponent;
                 var dmgComponents = bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true);
                 foreach (var comp in dmgComponents) comp.enabled = false;
+                coralSpikePool = null; // MAKE THIS THE GLOBAL OBJECT POOL REFERENCE, called "GlobalPool(Clone)"
                 setupBossValues();
                 P2 = P3 = false;
                 break;
@@ -275,5 +286,46 @@ public static class Language_Get_Patch
     {
         if (key == "CORAL_KING_SUPER") __result = "King Of The";
         if (key == "CORAL_KING_MAIN") __result = "Coral Kin";
+    }
+}
+public class ObjectPool
+{
+    private readonly GameObject prefab;
+    private readonly Queue<GameObject> pool = new Queue<GameObject>();
+    private readonly Transform parent;
+
+    public ObjectPool(GameObject prefab, int initialSize, Transform parent = null)
+    {
+        this.prefab = prefab;
+        this.parent = parent;
+
+        for (int i = 0; i < initialSize; i++)
+        {
+            var obj = GameObject.Instantiate(prefab, parent);
+            obj.SetActive(false);
+            pool.Enqueue(obj);
+        }
+    }
+
+    public GameObject Get()
+    {
+        if (pool.Count > 0)
+        {
+            var obj = pool.Dequeue();
+            obj.SetActive(true);
+            return obj;
+        }
+        else
+        {
+            var obj = GameObject.Instantiate(prefab, parent);
+            obj.SetActive(true);
+            return obj;
+        }
+    }
+
+    public void Return(GameObject obj)
+    {
+        obj.SetActive(false);
+        pool.Enqueue(obj);
     }
 }

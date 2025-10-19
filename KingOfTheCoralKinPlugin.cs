@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -24,19 +23,30 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     
     public static bool inCoralMemory; //? Bool that checks wether we are in the Memory_Coral_Tower, changes on scene load
     private static bool teleportToBoss;
-    private static readonly Vector3 CORAL_MEMORY_BOSS = new (
-        x: 55,
-        y: 510,
-        z: 0.004f
-    );
     public static HeroController hornet;
     public static PlayMakerFSM bossControlFSM;
     private static CoralSpikeState CoralSpikeFSMState;
-    public static bool P2 = false;
-    public static bool P3 = false;
-    private static bool scheduledCoralRain = false;
-    private static int groundHits = 0;
-    private static GameObject coralSpikePool;
+    public static bool P2;
+    public static bool P3;
+    private static bool scheduledCoralRain;
+    private static int groundHits;
+    private static bool p2spikes = false;
+    private static class SpikePools
+    {
+        public static List<GameObject> longSpear = new List<GameObject>();
+        public static List<GameObject> uppercutSpear = new List<GameObject>();
+        public static List<GameObject> airSpear = new List<GameObject>();
+
+        public static List<GameObject> getReleveantPool()
+        {
+            return CoralSpikeFSMState switch
+            {
+                CoralSpikeState.UPPERCUT => uppercutSpear,
+                CoralSpikeState.JAB => longSpear,
+                CoralSpikeState.AIRJAB => airSpear
+            };
+        }
+    }
     enum CoralSpikeState {
         UPPERCUT = 2,
         JAB = 3,
@@ -69,14 +79,13 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static void setupBossValues()
     {
         Destroy(bossControlFSM.gameObject.LocateMyFSM("Stun Control"));
-        
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatVariable = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatValue = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatVariable = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatValue = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatVariable = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatValue = 0;
-        
+        bossControlFSM.GetFirstActionOfType<FloatOperator>("Roar Recover")!.float1 = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Jab 2")!.time = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Uppercut 2")!.time = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Cross 2")!.time = 0.5f;
@@ -84,7 +93,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         bossControlFSM.GetFirstActionOfType<Wait>("Cross Followup 2")!.time = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Ground Hit")!.time = 0.5f;
         bossControlFSM.GetLastActionOfType<Wait>("Ground Hit")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<FloatOperator>("Roar Recover")!.float1 = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Followup Pause")!.time = 0f;
     }
     [HarmonyPatch(typeof(ActivateGameObject), nameof(ActivateGameObject.OnEnter))]
@@ -93,15 +101,13 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         if (!inCoralMemory) return;
         if (__instance.activatedGameObject == null) return;
         var go = __instance.activatedGameObject;
-        //log($"NAME: {go.name} | X: {go.transform.position.x}, Y: {go.transform.position.y}");
         if (go.name.StartsWith("Coral_spear_long"))
         {
             switch (CoralSpikeFSMState)
             {
-                //TODO: IMPLEMENT ITEM POOLING CAUSE THIS LAGS LMAOOO :sob:
                 case CoralSpikeState.UPPERCUT:
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 8 : 10, Vector3.right, 0f));
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -8 : -10, Vector3.right, 0f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 8 : 10, Vector3.right, 0.05f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -8 : -10, Vector3.right, 0.05f));
                     if (P2)
                     {
                         GameManager.instance.StartCoroutine(SpawnSpike(go, 16, Vector3.right, 0.2f));
@@ -112,11 +118,18 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     if (P3) GameManager.instance.StartCoroutine(SpawnSpike(go, new [] {4, -4}.GetRandomElement(), Vector3.right, 0.1f));
                     break;
                 case CoralSpikeState.JAB:
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up, 0f));
+                    var fixedOriginalJab = GetNewSpike(go);
+                    fixedOriginalJab.transform.position = go.transform.position;
+                    fixedOriginalJab.transform.rotation = go.transform.rotation;
+                    fixedOriginalJab.transform.localScale = go.transform.localScale;
+                    fixedOriginalJab.SetActive(true);
+                    GameManager.instance.StartCoroutine(DisableClone(fixedOriginalJab));
+                    go.SetActive(false);
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up, 0.1f));
                     break;
                 case CoralSpikeState.AIRJAB:
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 11 : 12, Vector3.right, 0f));
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -11 : -12, Vector3.right, 0f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 11 : 12, Vector3.right, 0.05f));
+                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -11 : -12, Vector3.right, 0.05f));
                     if (P2)
                     {
                         GameManager.instance.StartCoroutine(SpawnSpike(go, 22, Vector3.right, 0.2f));
@@ -129,33 +142,47 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             }
         }
     }
+    private static GameObject GetNewSpike(GameObject go)
+    {
+        List<GameObject> pool = SpikePools.getReleveantPool();
+        GameObject clone = null!;
+        bool found = false;
+        for (int i = 0; i < pool.Count; i++)
+        {
+            if (!pool[i].activeSelf)
+            {
+                clone = pool[i];
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            clone = Instantiate(go, go.transform.parent);
+            clone.name += "_POOLED";
+            pool.Add(clone);
+        }
+        return clone!;
+    }
     private static IEnumerator SpawnSpike(GameObject go, int distance, Vector3 direction, float delay)
     {
         yield return new WaitForSeconds(delay);
-        GameObject clone = Instantiate(go, go.transform.parent);
-        clone.name = go.name + "_Clone";
+        var clone = GetNewSpike(go);
         clone.transform.position = go.transform.position + direction * distance;
+        clone.transform.rotation = go.transform.rotation;
+        clone.transform.localScale = go.transform.localScale;
         if (CoralSpikeFSMState == CoralSpikeState.JAB)
         {
             clone.transform.FlipLocalScale(x: true);
-            clone.transform.position = new Vector3(
-                clone.transform.position.x > 50 ? 16.57f : 94.27f,
-                clone.transform.position.y,
-                clone.transform.position.z);
+            clone.transform.position = new Vector3(clone.transform.position.x > 50 ? 16.57f : 94.27f, clone.transform.position.y, clone.transform.position.z);
         }
         clone.SetActive(true);
-        GameManager.instance.StartCoroutine(DestroyClone(clone));
+        GameManager.instance.StartCoroutine(DisableClone(clone));
     }
-    private static IEnumerator DestroyClone(GameObject clone)
+    private static IEnumerator DisableClone(GameObject clone)
     {
         yield return new WaitForSeconds(3f);
-        Destroy(clone);
-    }
-    [HarmonyPostfix]
-    [HarmonyPatch(typeof(PlayMakerFSM), "OnEnable")]
-    private static void OnFsmEnable(PlayMakerFSM __instance)
-    {
-        if (!inCoralMemory) return;
+        clone.SetActive(false);
     }
     [HarmonyPostfix]
     [HarmonyPatch(typeof(FsmState), "OnEnter")]
@@ -168,7 +195,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 bossControlFSM = __instance.Fsm.FsmComponent;
                 var dmgComponents = bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true);
                 foreach (var comp in dmgComponents) comp.enabled = false;
-                coralSpikePool = null; // MAKE THIS THE GLOBAL OBJECT POOL REFERENCE, called "GlobalPool(Clone)"
                 setupBossValues();
                 P2 = P3 = false;
                 break;
@@ -183,6 +209,9 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 {
                     P3 = true;
                 }
+                break;
+            case "P3 Roar":
+                GameManager.instance.StartCoroutine(ScheduleNextState("UC Antic", 1.2f));
                 break;
             case "UC Antic":
                 CoralSpikeFSMState = CoralSpikeState.UPPERCUT;
@@ -218,6 +247,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     var coralSpikeFSM = __instance.Fsm.FsmComponent;
                     if (P3)
                     {
+                        GameManager.instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Cross Antic", "Jab Dir"}.GetRandomElement(), 1.3f));
                         if (coralSpikeFSM.transform.position.y > 557) Destroy(coralSpikeFSM.gameObject);
                         if (!scheduledCoralRain)
                         {
@@ -229,13 +259,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 }
                 break;
         }
-    }
-    private static void removeEventFromState(string stateName, string eventName)
-    {
-        var state = bossControlFSM.FsmStates.FirstOrDefault(state => state.Name == stateName);
-        state.Transitions = state.Transitions
-            .Where(t => t.EventName != eventName)
-            .ToArray();
     }
     private static IEnumerator DisableScheduledCoralRain()
     {
@@ -250,22 +273,22 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private void FixedUpdate()
     {
         if (!inCoralMemory) return;
-        
-        hornet.MaxHealth();
         if (hornet.cState.superDashing && teleportToBoss)
         {
             if (!(GameCameras.instance.cameraFadeFSM.ActiveStateName is "Scene Fade Out" or "Scene Fade In")) GameManager.instance.StartCoroutine(FadeTeleport());
-            if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = CORAL_MEMORY_BOSS;
+            if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = new Vector3(
+                x: 55,
+                y: 510,
+                z: 0.004f
+            );
         }
     }
-
     private static IEnumerator FadeTeleport()
     {
         GameCameras.instance.cameraFadeFSM.SetState("Scene Fade Out");
         yield return new WaitForSeconds(1.5f);
         GameCameras.instance.cameraFadeFSM.SetState("Scene Fade In");
     }
-
     private static IEnumerator ForceNextState(FsmState state, string eventName, float delay)
     {
         yield return new WaitForSeconds(delay);
@@ -286,46 +309,5 @@ public static class Language_Get_Patch
     {
         if (key == "CORAL_KING_SUPER") __result = "King Of The";
         if (key == "CORAL_KING_MAIN") __result = "Coral Kin";
-    }
-}
-public class ObjectPool
-{
-    private readonly GameObject prefab;
-    private readonly Queue<GameObject> pool = new Queue<GameObject>();
-    private readonly Transform parent;
-
-    public ObjectPool(GameObject prefab, int initialSize, Transform parent = null)
-    {
-        this.prefab = prefab;
-        this.parent = parent;
-
-        for (int i = 0; i < initialSize; i++)
-        {
-            var obj = GameObject.Instantiate(prefab, parent);
-            obj.SetActive(false);
-            pool.Enqueue(obj);
-        }
-    }
-
-    public GameObject Get()
-    {
-        if (pool.Count > 0)
-        {
-            var obj = pool.Dequeue();
-            obj.SetActive(true);
-            return obj;
-        }
-        else
-        {
-            var obj = GameObject.Instantiate(prefab, parent);
-            obj.SetActive(true);
-            return obj;
-        }
-    }
-
-    public void Return(GameObject obj)
-    {
-        obj.SetActive(false);
-        pool.Enqueue(obj);
     }
 }

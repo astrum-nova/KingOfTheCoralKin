@@ -11,7 +11,7 @@ using UnityEngine.SceneManagement;
 using Silksong.FsmUtil;
 
 //! DEBUG
-//! using BepInEx.Logging;
+using BepInEx.Logging;
 //! DEBUG
 
 namespace KingOfTheCoralKin;
@@ -20,8 +20,8 @@ namespace KingOfTheCoralKin;
 public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
 {
     //! DEBUG
-    //! private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
-    //! public static void log(string msg) => logger.LogInfo(msg);
+    private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
+    public static void log(string msg) => logger.LogInfo(msg);
     //! DEBUG
     
     private static bool inCoralMemory;                  //? Bool that checks wether we are in the Memory_Coral_Tower, changes on scene load
@@ -33,6 +33,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static bool P3;                             //? Bool that keeps track of phase 3 trigger
     private static bool scheduledCoralRain;             //? Bool that enables or disables more ground hit attacks, should allow no more than 2
     private static int groundHits;                      //? Counter for ground hit attacks, the bool above should be enough but i wanted additional safety to fix janky interactions
+    private static bool harpooned;                      //? Bool that fixes a bug where harpoon will reenable the boss hitbox 
+    private static DamageHero[] dmgComponents;
     private static class SpikePools
     {
         //? These 3 types of attacks need their own dedicated pool to work
@@ -93,6 +95,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 z: 0.004f
             );
         }
+        if (!harpooned) return;
+        foreach (var comp in dmgComponents) if (comp.enabled) comp.enabled = false;
     }
     
     //* PATCHES
@@ -152,9 +156,17 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         if (!inCoralMemory) return;
         switch (__instance.name)
         {
+            //? Fix bug where a harpoon hit would reenable his hitbox after a while, I HATE YOU TEAM CHERRY
+            case "Harpoon Dash End":
+            case "Ring Check R":
+            case "Suspend":
+                harpooned = true;
+                GameManager.instance.StopCoroutine(DisableHarpooned());
+                GameManager.instance.StartCoroutine(DisableHarpooned());
+                break;
             case "Intro Land":
                 bossControlFSM = __instance.Fsm.FsmComponent;
-                var dmgComponents = bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true);
+                dmgComponents = bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true);
                 foreach (var comp in dmgComponents) comp.enabled = false;
                 setupBossValues();
                 P2 = P3 = false;
@@ -332,6 +344,11 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         yield return new WaitForSeconds(delay);
         var transition = state.Transitions.FirstOrDefault(t => t.EventName == eventName);
         if (transition != null) state.Fsm.SetState(transition.ToState);
+    }
+    private static IEnumerator DisableHarpooned()
+    {
+        yield return new WaitForSeconds(2f);
+        harpooned = false;
     }
 }
 [HarmonyPatch(typeof(Language), "Get")]

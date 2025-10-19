@@ -1,9 +1,7 @@
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using BepInEx;
-using BepInEx.Logging;
 using HarmonyLib;
 using HutongGames.PlayMaker;
 using HutongGames.PlayMaker.Actions;
@@ -12,30 +10,34 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using Silksong.FsmUtil;
 
+//! DEBUG
+//! using BepInEx.Logging;
+//! DEBUG
+
 namespace KingOfTheCoralKin;
 
-// TODO - adjust the plugin guid as needed
 [BepInAutoPlugin(id: "io.github.kingofthecoralkin")]
 public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
 {
-    private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
-    public static void log(string msg) => logger.LogInfo(msg);
+    //! DEBUG
+    //! private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
+    //! public static void log(string msg) => logger.LogInfo(msg);
+    //! DEBUG
     
-    public static bool inCoralMemory; //? Bool that checks wether we are in the Memory_Coral_Tower, changes on scene load
-    private static bool teleportToBoss;
-    public static HeroController hornet;
-    public static PlayMakerFSM bossControlFSM;
-    private static CoralSpikeState CoralSpikeFSMState;
-    public static bool P2;
-    public static bool P3;
-    private static bool scheduledCoralRain;
-    private static int groundHits;
-    private static bool p2spikes = false;
+    private static bool inCoralMemory;                  //? Bool that checks wether we are in the Memory_Coral_Tower, changes on scene load
+    private static bool teleportToBoss;                 //? Bool that checks wether the player wants to teleport to the boss with silksoar or not
+    private static HeroController? hornet;              //? Player hero controller
+    private static PlayMakerFSM? bossControlFSM;        //? Boss control fsm
+    private static CoralSpikeState CoralSpikeFSMState;  //? Instance of an enum that keeps track of which coral spear attack the boss is doing
+    private static bool P2;                             //? Bool that keeps track of phase 2 trigger
+    private static bool P3;                             //? Bool that keeps track of phase 3 trigger
+    private static bool scheduledCoralRain;             //? Bool that enables or disables more ground hit attacks, should allow no more than 2
+    private static int groundHits;                      //? Counter for ground hit attacks, the bool above should be enough but i wanted additional safety to fix janky interactions
     private static class SpikePools
     {
-        public static List<GameObject> longSpear = new List<GameObject>();
-        public static List<GameObject> uppercutSpear = new List<GameObject>();
-        public static List<GameObject> airSpear = new List<GameObject>();
+        private static readonly List<GameObject> longSpear = [];
+        private static readonly List<GameObject> uppercutSpear = [];
+        private static readonly List<GameObject> airSpear = [];
 
         public static List<GameObject> getReleveantPool()
         {
@@ -43,15 +45,18 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             {
                 CoralSpikeState.UPPERCUT => uppercutSpear,
                 CoralSpikeState.JAB => longSpear,
-                CoralSpikeState.AIRJAB => airSpear
+                CoralSpikeState.AIRJAB => airSpear,
+                _ => null! //? Theoretically unreachable block, its there to ignore warnings about a possible null case
             };
         }
     }
     enum CoralSpikeState {
-        UPPERCUT = 2,
-        JAB = 3,
-        AIRJAB = 4,
+        UPPERCUT = 0,
+        JAB = 1,
+        AIRJAB = 2
     }
+    
+    //* MONOBEHAVIOURS
     private void Awake()
     {
         teleportToBoss = Config.Bind(
@@ -65,36 +70,21 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         SceneManager.sceneLoaded += sceneLoadSetup;
         Logger.LogInfo($"Plugin {Name} ({Id}) has loaded!");
     }
-    private static void sceneLoadSetup(Scene scene, LoadSceneMode mode)
+    private void FixedUpdate()
     {
-        if (scene.name != "Memory_Coral_Tower")
+        if (!inCoralMemory) return;
+        if (hornet!.cState.superDashing && teleportToBoss)
         {
-            inCoralMemory = false;
-            return;
+            if (!(GameCameras.instance.cameraFadeFSM.ActiveStateName is "Scene Fade Out" or "Scene Fade In")) GameManager.instance.StartCoroutine(FadeTeleport());
+            if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = new Vector3(
+                x: 55,
+                y: 510,
+                z: 0.004f
+            );
         }
-        PlayerData.instance.encounteredCoralKing = true;
-        inCoralMemory = true;
-        hornet = HeroController.instance;
     }
-    private static void setupBossValues()
-    {
-        Destroy(bossControlFSM.gameObject.LocateMyFSM("Stun Control"));
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatVariable = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatValue = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatVariable = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatValue = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatVariable = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatValue = 0;
-        bossControlFSM.GetFirstActionOfType<FloatOperator>("Roar Recover")!.float1 = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Jab 2")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Uppercut 2")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Cross 2")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Air Jab 2")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Cross Followup 2")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Ground Hit")!.time = 0.5f;
-        bossControlFSM.GetLastActionOfType<Wait>("Ground Hit")!.time = 0.5f;
-        bossControlFSM.GetFirstActionOfType<Wait>("Followup Pause")!.time = 0f;
-    }
+    
+    //* PATCHES
     [HarmonyPatch(typeof(ActivateGameObject), nameof(ActivateGameObject.OnEnter))]
     static void Postfix(ActivateGameObject __instance)
     {
@@ -142,48 +132,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             }
         }
     }
-    private static GameObject GetNewSpike(GameObject go)
-    {
-        List<GameObject> pool = SpikePools.getReleveantPool();
-        GameObject clone = null!;
-        bool found = false;
-        for (int i = 0; i < pool.Count; i++)
-        {
-            if (!pool[i].activeSelf)
-            {
-                clone = pool[i];
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-        {
-            clone = Instantiate(go, go.transform.parent);
-            clone.name += "_POOLED";
-            pool.Add(clone);
-        }
-        return clone!;
-    }
-    private static IEnumerator SpawnSpike(GameObject go, int distance, Vector3 direction, float delay)
-    {
-        yield return new WaitForSeconds(delay);
-        var clone = GetNewSpike(go);
-        clone.transform.position = go.transform.position + direction * distance;
-        clone.transform.rotation = go.transform.rotation;
-        clone.transform.localScale = go.transform.localScale;
-        if (CoralSpikeFSMState == CoralSpikeState.JAB)
-        {
-            clone.transform.FlipLocalScale(x: true);
-            clone.transform.position = new Vector3(clone.transform.position.x > 50 ? 16.57f : 94.27f, clone.transform.position.y, clone.transform.position.z);
-        }
-        clone.SetActive(true);
-        GameManager.instance.StartCoroutine(DisableClone(clone));
-    }
-    private static IEnumerator DisableClone(GameObject clone)
-    {
-        yield return new WaitForSeconds(3f);
-        clone.SetActive(false);
-    }
     [HarmonyPostfix]
     [HarmonyPatch(typeof(FsmState), "OnEnter")]
     private static void OnFsmStateEntered(FsmState __instance)
@@ -229,17 +177,17 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 if (groundHits >= 2)
                 {
                     groundHits = 0;
-                    bossControlFSM.Fsm.manualUpdate = false;
+                    bossControlFSM!.Fsm.manualUpdate = false;
                 }
                 else
                 {
-                    bossControlFSM.Fsm.manualUpdate = true;
+                    bossControlFSM!.Fsm.manualUpdate = true;
                     GameManager.instance.StartCoroutine(ScheduleNextState("Ground Hit", 0.3f));
                 }
                 groundHits++;
                 break;
             case "Shoot Pos":
-                bossControlFSM.SetState("P3");
+                bossControlFSM!.SetState("P3");
                 break;
             case "Antic":
                 if (__instance.Fsm.FsmComponent.name.StartsWith("Coral Spike"))
@@ -260,6 +208,82 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 break;
         }
     }
+    
+    //* UTILITIES
+    private static void sceneLoadSetup(Scene scene, LoadSceneMode mode)
+    {
+        if (scene.name != "Memory_Coral_Tower")
+        {
+            inCoralMemory = false;
+            return;
+        }
+        PlayerData.instance.encounteredCoralKing = true;
+        inCoralMemory = true;
+        hornet = HeroController.instance;
+    }
+    private static GameObject GetNewSpike(GameObject go)
+    {
+        List<GameObject> pool = SpikePools.getReleveantPool();
+        GameObject clone = null!;
+        bool found = false;
+        for (int i = 0; i < pool.Count; i++)
+        {
+            if (!pool[i].activeSelf)
+            {
+                clone = pool[i];
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            clone = Instantiate(go, go.transform.parent);
+            clone.name += "_POOLED";
+            pool.Add(clone);
+        }
+        return clone!;
+    }
+    private static void setupBossValues()
+    {
+        Destroy(bossControlFSM!.gameObject.LocateMyFSM("Stun Control"));
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatVariable = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatValue = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatVariable = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatValue = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatVariable = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatValue = 0;
+        bossControlFSM.GetFirstActionOfType<FloatOperator>("Roar Recover")!.float1 = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Jab 2")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Uppercut 2")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Cross 2")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Air Jab 2")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Cross Followup 2")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Ground Hit")!.time = 0.5f;
+        bossControlFSM.GetLastActionOfType<Wait>("Ground Hit")!.time = 0.5f;
+        bossControlFSM.GetFirstActionOfType<Wait>("Followup Pause")!.time = 0f;
+    }
+    
+    //* COROUTINES
+    private static IEnumerator SpawnSpike(GameObject go, int distance, Vector3 direction, float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        var clone = GetNewSpike(go);
+        clone.transform.position = go.transform.position + direction * distance;
+        clone.transform.rotation = go.transform.rotation;
+        clone.transform.localScale = go.transform.localScale;
+        if (CoralSpikeFSMState == CoralSpikeState.JAB)
+        {
+            clone.transform.FlipLocalScale(x: true);
+            clone.transform.position = new Vector3(clone.transform.position.x > 50 ? 16.57f : 94.27f, clone.transform.position.y, clone.transform.position.z);
+        }
+        clone.SetActive(true);
+        GameManager.instance.StartCoroutine(DisableClone(clone));
+    }
+    private static IEnumerator DisableClone(GameObject clone)
+    {
+        yield return new WaitForSeconds(3f);
+        clone.SetActive(false);
+    }
     private static IEnumerator DisableScheduledCoralRain()
     {
         yield return new WaitForSeconds(0.5f);
@@ -268,20 +292,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static IEnumerator ScheduleNextState(string stateName, float duration)
     {
         yield return new WaitForSeconds(duration);
-        bossControlFSM.SetState(stateName);
-    }
-    private void FixedUpdate()
-    {
-        if (!inCoralMemory) return;
-        if (hornet.cState.superDashing && teleportToBoss)
-        {
-            if (!(GameCameras.instance.cameraFadeFSM.ActiveStateName is "Scene Fade Out" or "Scene Fade In")) GameManager.instance.StartCoroutine(FadeTeleport());
-            if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = new Vector3(
-                x: 55,
-                y: 510,
-                z: 0.004f
-            );
-        }
+        bossControlFSM!.SetState(stateName);
     }
     private static IEnumerator FadeTeleport()
     {
@@ -297,7 +308,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     }
 }
 [HarmonyPatch(typeof(Language), "Get")]
-[HarmonyPatch(new [] { typeof(string), typeof(string) })]
+[HarmonyPatch([typeof(string), typeof(string)])]
 public static class Language_Get_Patch
 {
     public static IEnumerator WaitAndPatch()

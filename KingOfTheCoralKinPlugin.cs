@@ -192,6 +192,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 SpikePools.resetPools();
                 break;
             case "Death Stagger":
+                //TODO: RESET EVERYTHING HERE TO AVOID SOME NULL REFS
                 GameManager.instance.StopAllCoroutines();
                 break;
             case "P2":

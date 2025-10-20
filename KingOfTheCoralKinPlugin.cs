@@ -11,7 +11,7 @@ using UnityEngine.SceneManagement;
 using Silksong.FsmUtil;
 
 //! DEBUG
-using BepInEx.Logging;
+//! using BepInEx.Logging;
 //! DEBUG
 
 namespace KingOfTheCoralKin;
@@ -20,8 +20,8 @@ namespace KingOfTheCoralKin;
 public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
 {
     //! DEBUG
-    private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
-    public static void log(string msg) => logger.LogInfo(msg);
+    //! private static readonly ManualLogSource logger = BepInEx.Logging.Logger.CreateLogSource("King Of The Coral Kin");
+    //! public static void log(string msg) => logger.LogInfo(msg);
     //! DEBUG
     
     private static bool inCoralMemory;                  //? Bool that checks wether we are in the Memory_Coral_Tower, changes on scene load
@@ -33,15 +33,15 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static bool P3;                             //? Bool that keeps track of phase 3 trigger
     private static bool scheduledCoralRain;             //? Bool that enables or disables more ground hit attacks, should allow no more than 2
     private static int groundHits;                      //? Counter for ground hit attacks, the bool above should be enough but i wanted additional safety to fix janky interactions
-    private static bool harpooned;                      //? Bool that fixes a bug where harpoon will reenable the boss hitbox 
-    private static DamageHero[] dmgComponents;
+    private static bool crossed;                        //? Bool that keeps track of wether the boss did the cross attack or not, to fix some jank
+    private static bool threeSpiked;                    //? Prevents the spike duplication in phase 3 from happening twice creating 5 spikes instead of 3
     private static class SpikePools
     {
         //? These 3 types of attacks need their own dedicated pool to work
         private static readonly List<GameObject> longSpear = [];
         private static readonly List<GameObject> uppercutSpear = [];
         private static readonly List<GameObject> airSpear = [];
-
+        
         //? Gets the pool based on the coralSpikeFSMState
         public static List<GameObject> getReleveantPool()
         {
@@ -91,12 +91,10 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             if (!(GameCameras.instance.cameraFadeFSM.ActiveStateName is "Scene Fade Out" or "Scene Fade In")) GameManager.instance.StartCoroutine(FadeTeleport());
             if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = new Vector3(
                 x: 55.2f,
-                y: 510,
+                y: 500,
                 z: 0.004f
             );
         }
-        if (!harpooned) return;
-        foreach (var comp in dmgComponents) if (comp.enabled) comp.enabled = false;
     }
     
     //* PATCHES
@@ -121,7 +119,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                         GameManager.instance.StartCoroutine(SpawnSpike(go, 24, Vector3.right, 0.3f));
                         GameManager.instance.StartCoroutine(SpawnSpike(go, -24, Vector3.right, 0.3f));
                     }
-                    if (P3) GameManager.instance.StartCoroutine(SpawnSpike(go, new [] {4, -4}.GetRandomElement(), Vector3.right, 0.1f));
+                    if (P3 && !threeSpiked)
+                    {
+                        threeSpiked = true;
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, new[] { 4, -4 }.GetRandomElement(), Vector3.right, 0.1f));
+                        GameManager.instance.StartCoroutine(DisableThreeSpiked());
+                    }
                     break;
                 case CoralSpikeState.JAB:
                     //? Sometimes the original spike would not show up at all, so to be safe i get a new one and remove the original one
@@ -132,9 +135,21 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     fixedOriginalJab.SetActive(true);
                     GameManager.instance.StartCoroutine(DisableClone(fixedOriginalJab));
                     go.SetActive(false);
-                    GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up, 0.1f));
+                    if (!crossed) GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? new [] {4, 8}.GetRandomElement() : 8, Vector3.up, 0.1f));
+                    else
+                    {
+                        crossed = false;
+                        GameManager.instance.StartCoroutine(SpawnSpike(go, 8, Vector3.up, 0.1f));
+                    }
                     break;
                 case CoralSpikeState.AIRJAB:
+                    //? Sometimes the original spike would not show up at all, so to be safe i get a new one and remove the original one
+                    var fixedOriginalAirJab = GetNewSpike(go);
+                    fixedOriginalAirJab.transform.position = go.transform.position;
+                    fixedOriginalAirJab.transform.rotation = go.transform.rotation;
+                    fixedOriginalAirJab.transform.localScale = go.transform.localScale;
+                    fixedOriginalAirJab.SetActive(true);
+                    GameManager.instance.StartCoroutine(DisableClone(fixedOriginalAirJab));
                     GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? 11 : 12, Vector3.right, 0.05f));
                     GameManager.instance.StartCoroutine(SpawnSpike(go, P2 ? -11 : -12, Vector3.right, 0.05f));
                     if (P2)
@@ -156,18 +171,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         if (!inCoralMemory) return;
         switch (__instance.name)
         {
-            //? Fix bug where a harpoon hit would reenable his hitbox after a while, I HATE YOU TEAM CHERRY
-            case "Harpoon Dash End":
-            case "Ring Check R":
-            case "Suspend":
-                harpooned = true;
-                GameManager.instance.StopCoroutine(DisableHarpooned());
-                GameManager.instance.StartCoroutine(DisableHarpooned());
+            case "Drop In":
+                bossControlFSM = __instance.Fsm.FsmComponent;
+                foreach (var dmgHero in bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true)) Destroy(dmgHero);
                 break;
             case "Intro Land":
-                bossControlFSM = __instance.Fsm.FsmComponent;
-                dmgComponents = bossControlFSM.gameObject.GetComponentsInChildren<DamageHero>(true);
-                foreach (var comp in dmgComponents) comp.enabled = false;
+            case "Intro Roar":
                 setupBossValues();
                 P2 = P3 = false;
                 scheduledCoralRain = false;
@@ -179,16 +188,28 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 P2 = P3 = false;
                 scheduledCoralRain = false;
                 groundHits = 0;
+                crossed = false;
                 SpikePools.resetPools();
                 break;
+            case "Death Stagger":
+                GameManager.instance.StopAllCoroutines();
+                break;
             case "P2":
-                if (!P2) P2 = true;
+                if (!P2)
+                {
+                    P2 = true;
+                    GameManager.instance.StartCoroutine(ForceNextState(__instance, "PHASE ROAR", 0));
+                }
                 break;
             case "P3":
-                if (!P3) P3 = true;
+                if (!P3)
+                {
+                    P3 = true;
+                    GameManager.instance.StartCoroutine(ForceNextState(__instance, "PHASE ROAR", 0));
+                }
                 break;
             case "P3 Roar":
-                GameManager.instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Cross Antic", "Jab Dir"}.GetRandomElement(), 1.2f));
+                GameManager.instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Cross Antic", "Jab Dir"}.GetRandomElement(), 1f));
                 break;
             case "UC Antic":
                 coralSpikeFSMState = CoralSpikeState.UPPERCUT;
@@ -199,20 +220,20 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
             case "Air Jab Antic":
                 coralSpikeFSMState = CoralSpikeState.AIRJAB;
                 break;
+            case "Jab 2":
+                //TODO: SLIDING PROBLEM COMES FROM HERE, MAYBE SAVE THE COROUTINE LIKE YOU DID FOR THE HARPOON BUG AND STOP IT IN HOP STATES
+                //TODO: MAYBE CHECK IF IT CHOSE UC ANTIC CAUSE THATS THE PROBLEMATIC ONE AND SET IT TO 0.6f INSTEAD OF 0.7f
+                var jabFollowup = new[] { "Cross Antic", "Air Jab Aim", "UC Antic" }.GetRandomElement();
+                GameManager.instance.StartCoroutine(ScheduleNextState(jabFollowup, 0.7f));
+                break;
             case "Cross 2":
+                crossed = true;
+                GameManager.instance.StartCoroutine(DisableCrossed());
                 GameManager.instance.StartCoroutine(ForceNextState(__instance, "CROSS CHOP", 0.05f));
                 break;
             case "Ground Hit":
-                if (groundHits >= 2)
-                {
-                    groundHits = 0;
-                    bossControlFSM!.Fsm.manualUpdate = false;
-                }
-                else
-                {
-                    bossControlFSM!.Fsm.manualUpdate = true;
-                    GameManager.instance.StartCoroutine(ScheduleNextState("Ground Hit", 0.3f));
-                }
+                if (groundHits >= 2) groundHits = 0;
+                else GameManager.instance.StartCoroutine(ScheduleNextState("Ground Hit", 0.35f));
                 groundHits++;
                 break;
             case "Shoot Pos":
@@ -227,12 +248,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     if (P3)
                     {
                         //? Prevents the boss from doing this attack twice in a row, because it runs out of pooled prefabs and it looks janky
-                        GameManager.instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Cross Antic", "Jab Dir"}.GetRandomElement(), 1.5f));
+                        GameManager.instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Jab Dir"}.GetRandomElement(), 1.2f));
                         if (coralSpikeFSM.transform.position.y > 557) Destroy(coralSpikeFSM.gameObject);
                         if (!scheduledCoralRain)
                         {
                             scheduledCoralRain = true;
-                            GameManager.instance.StartCoroutine(ScheduleNextState("Ground Hit", 0.5f));
+                            GameManager.instance.StartCoroutine(ScheduleNextState("Ground Hit", 0.2f));
                             GameManager.instance.StartCoroutine(DisableScheduledCoralRain());
                         }
                     }
@@ -240,7 +261,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 break;
         }
     }
-    
+
     //* UTILITIES
     private static void sceneLoadSetup(Scene scene, LoadSceneMode mode)
     {
@@ -287,8 +308,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P1")!.floatValue = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatVariable = 0;
         bossControlFSM.GetFirstActionOfType<SetFloatValue>("P2")!.floatValue = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatVariable = 0;
-        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatValue = 0;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatVariable = 0f;
+        bossControlFSM.GetFirstActionOfType<SetFloatValue>("P3")!.floatValue = 0f;
         bossControlFSM.GetFirstActionOfType<FloatOperator>("Roar Recover")!.float1 = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Jab 2")!.time = 0.5f;
         bossControlFSM.GetFirstActionOfType<Wait>("Uppercut 2")!.time = 0.5f;
@@ -322,16 +343,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         yield return new WaitForSeconds(3f);
         clone.SetActive(false);
     }
-    private static IEnumerator DisableScheduledCoralRain()
-    {
-        yield return new WaitForSeconds(0.5f);
-        scheduledCoralRain = false;
-    }
-    private static IEnumerator ScheduleNextState(string stateName, float duration)
-    {
-        yield return new WaitForSeconds(duration);
-        bossControlFSM!.SetState(stateName);
-    }
     //? Effect used to hide the jarring teleportation to the boss room
     private static IEnumerator FadeTeleport()
     {
@@ -345,10 +356,25 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         var transition = state.Transitions.FirstOrDefault(t => t.EventName == eventName);
         if (transition != null) state.Fsm.SetState(transition.ToState);
     }
-    private static IEnumerator DisableHarpooned()
+    private static IEnumerator ScheduleNextState(string stateName, float duration)
     {
-        yield return new WaitForSeconds(2f);
-        harpooned = false;
+        yield return new WaitForSeconds(duration);
+        bossControlFSM!.SetState(stateName);
+    }
+    private static IEnumerator DisableCrossed()
+    {
+        yield return new WaitForSeconds(1.5f);
+        crossed = false;
+    }
+    private static IEnumerator DisableThreeSpiked()
+    {
+        yield return new WaitForSeconds(0.5f);
+        threeSpiked = false;
+    }
+    private static IEnumerator DisableScheduledCoralRain()
+    {
+        yield return new WaitForSeconds(1f);
+        scheduledCoralRain = false;
     }
 }
 [HarmonyPatch(typeof(Language), "Get")]

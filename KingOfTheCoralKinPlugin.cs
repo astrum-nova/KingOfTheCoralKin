@@ -1,4 +1,3 @@
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -37,8 +36,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static int groundHits;                      //? Counter for ground hit attacks, the bool above should be enough but i wanted additional safety to fix janky interactions
     private static bool crossed;                        //? Bool that keeps track of wether the boss did the cross attack or not, to fix some jank
     private static bool threeSpiked;                    //? Prevents the spike duplication in phase 3 from happening twice creating 5 spikes instead of 3
-
-    public static KingOfTheCoralKinPlugin Instance { get; private set; }
+    private static string jabFollowup;                  //? Static string for the jab follow up, needed here to fix the sliding bug when jab goes into an uppercut
+    
+    //? For some FUCKING FUCKASS REASON the sliding bug is fixed just by using a static reference to this coroutine
+    //? The original code that featured the sliding bug just passed the function, now it passes this variable, NOTHING SHOULD'VE FUCKING CHANGED BUT NOW ITS FIXED??? WHAT???
+    private static IEnumerator jabFollowupCoroutine = ScheduleNextState(jabFollowup!, 0.7f);
+    private static KingOfTheCoralKinPlugin Instance { get; set; } = null!;
     private static class SpikePools
     {
         //? These 3 types of attacks need their own dedicated pool to work
@@ -204,7 +207,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 SpikePools.resetPools();
                 break;
             case "Death Stagger":
-                //TODO: RESET EVERYTHING HERE TO AVOID SOME NULL REFS
+                //TODO: UNPATCH THE WHOLE CLASS HERE
+                inCoralMemory = false;
                 Instance.StopAllCoroutines();
                 break;
             case "P2":
@@ -234,10 +238,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 coralSpikeFSMState = CoralSpikeState.AIRJAB;
                 break;
             case "Jab 2":
-                //TODO: SLIDING PROBLEM COMES FROM HERE, MAYBE SAVE THE COROUTINE LIKE YOU DID FOR THE HARPOON BUG AND STOP IT IN HOP STATES
-                //TODO: MAYBE CHECK IF IT CHOSE UC ANTIC CAUSE THATS THE PROBLEMATIC ONE AND SET IT TO 0.6f INSTEAD OF 0.7f
-                var jabFollowup = new[] { "Cross Antic", "Air Jab Aim", "UC Antic" }.GetRandomElement();
-                Instance.StartCoroutine(ScheduleNextState(jabFollowup, 0.7f));
+                jabFollowup = new[] {"Cross Antic", "Air Jab Aim", "UC Antic"}.GetRandomElement();
+                Instance.StartCoroutine(jabFollowupCoroutine);
                 break;
             case "Cross 2":
                 crossed = true;
@@ -261,7 +263,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     if (P3)
                     {
                         //? Prevents the boss from doing this attack twice in a row, because it runs out of pooled prefabs and it looks janky
-                        Instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Jab Dir"}.GetRandomElement(), 1.2f));
+                        Instance.StartCoroutine(ScheduleNextState(new [] {"Air Jab Aim", "Jab Dir"}.GetRandomElement(), 1.2f));
                         if (coralSpikeFSM.transform.position.y > 557) Destroy(coralSpikeFSM.gameObject);
                         if (!scheduledCoralRain)
                         {

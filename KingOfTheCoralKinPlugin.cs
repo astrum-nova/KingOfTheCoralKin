@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,6 +10,7 @@ using TeamCherry.Localization;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using Silksong.FsmUtil;
+using Random = UnityEngine.Random;
 
 //! DEBUG
 //! using BepInEx.Logging;
@@ -36,11 +38,9 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static int groundHits;                      //? Counter for ground hit attacks, the bool above should be enough but i wanted additional safety to fix janky interactions
     private static bool crossed;                        //? Bool that keeps track of wether the boss did the cross attack or not, to fix some jank
     private static bool threeSpiked;                    //? Prevents the spike duplication in phase 3 from happening twice creating 5 spikes instead of 3
-    private static string jabFollowup;                  //? Static string for the jab follow up, needed here to fix the sliding bug when jab goes into an uppercut
+    private static bool crossCooldown;                  //? Bool that prevents the boss from doing the cross too often, fixes disappearing cross (team cherrys pool system sucks)
+    private static bool jabbed;                         //? Bool that prevents the boss from doing the jab twice in a row
     
-    //? For some FUCKING FUCKASS REASON the sliding bug is fixed just by using a static reference to this coroutine
-    //? The original code that featured the sliding bug just passed the function, now it passes this variable, NOTHING SHOULD'VE FUCKING CHANGED BUT NOW ITS FIXED??? WHAT???
-    private static IEnumerator jabFollowupCoroutine = ScheduleNextState(jabFollowup!, 0.7f);
     private static KingOfTheCoralKinPlugin Instance { get; set; } = null!;
     private static class SpikePools
     {
@@ -101,7 +101,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         //? Teleports hornet straight to the boss room from the starting room in the coral memory
         if (hornet!.cState.superDashing && teleportToBoss)
         {
-            if (!(GameCameras.instance.cameraFadeFSM.ActiveStateName is "Scene Fade Out" or "Scene Fade In")) Instance.StartCoroutine(FadeTeleport());
+            if (GameCameras.instance.cameraFadeFSM.ActiveStateName is not ("Scene Fade Out" or "Scene Fade In")) Instance.StartCoroutine(FadeTeleport());
             if (hornet.transform.position.y is > 40 and < 50) hornet.transform.position = new Vector3(
                 x: 55.2f,
                 y: 500,
@@ -207,8 +207,12 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 SpikePools.resetPools();
                 break;
             case "Death Stagger":
-                //TODO: UNPATCH THE WHOLE CLASS HERE
                 inCoralMemory = false;
+                P2 = P3 = false;
+                scheduledCoralRain = false;
+                groundHits = 0;
+                crossed = false;
+                SpikePools.resetPools();
                 Instance.StopAllCoroutines();
                 break;
             case "P2":
@@ -226,25 +230,42 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 }
                 break;
             case "P3 Roar":
+                //? Prevent the boss from doing the P3 roar which leads into Shoot Antic, one of the states we want to avoid
                 Instance.StartCoroutine(ScheduleNextState(new [] {"UC Antic", "Air Jab Aim", "Cross Antic", "Jab Dir"}.GetRandomElement(), 1f));
                 break;
             case "UC Antic":
-                coralSpikeFSMState = CoralSpikeState.UPPERCUT;
+                //? Fix failed uppercut
+                if (coralSpikeFSMState == CoralSpikeState.UPPERCUT) bossControlFSM!.SetState("Air Jab Aim");
+                else coralSpikeFSMState = CoralSpikeState.UPPERCUT;
                 break;
             case "Jab Antic":
-                coralSpikeFSMState = CoralSpikeState.JAB;
+                //? Prevent double jabs since they create unfair patterns
+                if (coralSpikeFSMState == CoralSpikeState.JAB) bossControlFSM!.SetState(new[] {"Cross Antic", "Air Jab Aim", "UC Antic"}.GetRandomElement());
+                else coralSpikeFSMState = CoralSpikeState.JAB;
                 break;
             case "Air Jab Antic":
                 coralSpikeFSMState = CoralSpikeState.AIRJAB;
                 break;
-            case "Jab 2":
-                jabFollowup = new[] {"Cross Antic", "Air Jab Aim", "UC Antic"}.GetRandomElement();
-                Instance.StartCoroutine(jabFollowupCoroutine);
-                break;
             case "Cross 2":
                 crossed = true;
+                crossCooldown = true;
                 Instance.StartCoroutine(DisableCrossed());
+                Instance.StartCoroutine(DisableCrossCooldown());
                 Instance.StartCoroutine(ForceNextState(__instance, "CROSS CHOP", 0.05f));
+                break;
+            case "Cross Antic":
+                //? Fix failed cross
+                if (crossCooldown)
+                {
+                    bossControlFSM!.SetState(coralSpikeFSMState switch
+                    {
+                        CoralSpikeState.UPPERCUT => Random.value < 0.5f ? "Air Jab Aim" : "Jab Dir",
+                        CoralSpikeState.JAB => Random.value < 0.5f ? "Air Jab Aim" : "UC Antic",
+                        CoralSpikeState.AIRJAB => Random.value < 0.5f ? "UC Antic" : "Jab Dir",
+                        _ => null!
+                    });
+                    crossCooldown = false;
+                }
                 break;
             case "Ground Hit":
                 if (groundHits >= 2) groundHits = 0;
@@ -252,7 +273,8 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                 groundHits++;
                 break;
             case "Shoot Pos":
-                //? Forbid the boss from doing this attack on its own since it can create unfair patterns
+            case "Shoot Antic":
+                //? Prevent the boss from doing this attack on its own since it can create unfair patterns
                 bossControlFSM!.SetState("P3");
                 break;
             case "Antic":
@@ -263,7 +285,7 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
                     if (P3)
                     {
                         //? Prevents the boss from doing this attack twice in a row, because it runs out of pooled prefabs and it looks janky
-                        Instance.StartCoroutine(ScheduleNextState(new [] {"Air Jab Aim", "Jab Dir"}.GetRandomElement(), 1.2f));
+                        Instance.StartCoroutine(ScheduleNextState("Air Jab Aim", 1.2f));
                         if (coralSpikeFSM.transform.position.y > 557) Destroy(coralSpikeFSM.gameObject);
                         if (!scheduledCoralRain)
                         {
@@ -300,12 +322,10 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
         //? Simple for loop is also less expensive than a FirstOrDefault or foreach
         for (int i = 0; i < pool.Count; i++)
         {
-            if (!pool[i].activeSelf)
-            {
-                clone = pool[i];
-                found = true;
-                break;
-            }
+            if (pool[i].activeSelf) continue;
+            clone = pool[i];
+            found = true;
+            break;
         }
         //? Instantiate a new spike if none are available
         if (!found)
@@ -380,6 +400,11 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     {
         yield return new WaitForSeconds(1.5f);
         crossed = false;
+    }
+    private static IEnumerator DisableCrossCooldown()
+    {
+        yield return new WaitForSeconds(3f);
+        crossCooldown = false;
     }
     private static IEnumerator DisableThreeSpiked()
     {

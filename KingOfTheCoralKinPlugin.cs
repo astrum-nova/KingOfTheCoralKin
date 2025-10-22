@@ -19,6 +19,7 @@ using Random = UnityEngine.Random;
 namespace KingOfTheCoralKin;
 
 [BepInAutoPlugin(id: "io.github.kingofthecoralkin")]
+[BepInDependency("org.silksong-modding.fsmutil")]
 public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
 {
     //! DEBUG
@@ -39,7 +40,6 @@ public partial class KingOfTheCoralKinPlugin : BaseUnityPlugin
     private static bool crossed;                        //? Bool that keeps track of wether the boss did the cross attack or not, to fix some jank
     private static bool threeSpiked;                    //? Prevents the spike duplication in phase 3 from happening twice creating 5 spikes instead of 3
     private static bool crossCooldown;                  //? Bool that prevents the boss from doing the cross too often, fixes disappearing cross (team cherrys pool system sucks)
-    private static bool jabbed;                         //? Bool that prevents the boss from doing the jab twice in a row
     
     private static KingOfTheCoralKinPlugin Instance { get; set; } = null!;
     private static class SpikePools

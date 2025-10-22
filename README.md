@@ -1,5 +1,5 @@
 # King Of The Coral Kin
-Crust Kin Khann is getting the buff he deserves
+Crust King Khann is getting the buff he deserves
 
 # Installation
 The zip contains KingOfTheCoralKin.dll, place it in BepInEx/plugins/(here).
